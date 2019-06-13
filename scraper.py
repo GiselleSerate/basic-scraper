@@ -1,6 +1,8 @@
+from datetime import datetime
 import json
 import os
 import re
+import requests
 from time import sleep
 
 from bs4 import BeautifulSoup
@@ -79,7 +81,7 @@ class Scraper(object):
             except IndexError:
                 # Not enough mail, sleep anyway
                 pass
-            sleep(30)
+            sleep(5)
         print('You\'ve got mail!')
         # Read the email with the OTP
         email = session.get_email(latest_summary.guid)
@@ -135,25 +137,90 @@ class Scraper(object):
         except TimeoutException:
             print('Timed out waiting for post-login page to load.')
 
-        # Get Request Verification Token
+        # Get Request Verification Token and updates
         token = self.driver.find_element_by_name('__RequestVerificationToken')
         match = re.search(r'"data":({"Data":.*?"Total":\d+,"AggregateResults":null})', self.driver.page_source)
         if match is None:
             raise GetLinkError("You have no access to download files. Probably some hardcoded URL is wrong, or you set wrong 'companyid' in config file.")
         updates = json.loads(match.group(1))
-        return token, updates
+        return token, updates['Data']
 
-    # def get_update_page(self):
-    #     '''
-    #     Must start on update page. 
-    #     '''
+    def find_latest_update(self, updates):
+        updates_of_type = [u for u in updates if u['Key'] == self.key]
+        updates_sorted = sorted(updates_of_type, key=lambda x: datetime.strptime(x['ReleaseDate'], '%Y-%m-%dT%H:%M:%S'))
+        latest = updates_sorted[-1]
+        print(f'Found latest update:  {latest[self.filename_string]}  Released {latest["ReleaseDate"]}')
+        return latest[self.filename_string], latest['FolderName'], latest['VersionNumber']
 
+    def click_link(self):
+        '''
+        Maybe eventually we'll not hard-code this. 
+        '''
+        # Get section header
+        body = self.driver.find_element_by_xpath('//tbody')
+        
+
+    def get_download_link(self, token, filename, foldername):
+        '''
+        Broken. fml.
+        '''
+        headers = {'Content-Type': 'application/json; charset=UTF-8',
+                   'Accept': 'application/json, text/javascript, */*; q=0.01',
+                   'X-Requested-With': 'XMLHttpRequest',
+                   }
+        payload = {'__RequestVerificationToken': token,
+                   'FileName': filename,
+                   'FolderName': foldername,
+                   }
+        response = requests.post(self.get_link_url, data=payload, headers=headers).text
+        print('Response text:')
+        print(response)
+        responseJson = json.loads(response)
+        
+        if 'Success' not in responseJson or not responseJson['Success']:
+            raise GetLinkError(f'Failure getting download link: {responseJson}')
+        return responseJson['DownloadUrl']
+
+    def download(self, download_dir, url, filename):
+        '''
+        Didn't even get here yet tbh
+        '''
+        os.chdir(download_dir)
+        self.browser.retrieve(url, filename)
+        return filename
 
 
 
 if __name__ == '__main__':
+    download_dir = app.config['DOWNLOAD_DIR']
+
     scraper = Scraper(email=app.config['EMAIL'], password=app.config['PASSWORD'], company_id=app.config['COMPANY_ID'],\
         package="appthreat", debug=False, isReleaseNotes=False, binary_location=app.config['BINARY_LOCATION'])
+
     token, updates = scraper.login()
-    print(updates)
-    # scraper.nav_to_updates()
+    
+    # Determine latest update
+    filename, foldername, latestversion = scraper.find_latest_update(updates)
+
+    # Get previously downloaded versions from download directory
+    downloaded_versions = []
+    for f in os.listdir(download_dir):
+        downloaded_versions.append(f)
+
+    # Check if already downloaded latest and do nothing
+    if filename in downloaded_versions:
+        print(f'Already downloaded latest version: {filename}')
+        sys.exit(0)
+
+    # content = scraper.click_link()
+
+    # # Get download URL
+    # fileurl = scraper.get_download_link(token, filename, foldername)
+
+    # # Download latest version to download directory
+    # print(f'Downloading latest version: {latestversion}')
+    # filename = scraper.download(download_dir, fileurl, filename)
+    # if filename is not None:
+    #     print(f'Finished downloading file: {filename}')
+    # else:
+    #     print('Unable to download latest content update')
