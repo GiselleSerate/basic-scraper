@@ -18,7 +18,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 app = Flask(__name__)
-app.config.from_object('config.ChromeConfig')
+app.config.from_object('config.DebugConfig')
 
 
 class Scraper(object):
