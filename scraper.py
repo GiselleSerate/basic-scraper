@@ -87,11 +87,37 @@ class Scraper(object):
                 checkNow.click()
                 break
             except ElementClickInterceptedException:
-                print('NAPTIME')
                 sleep(1)
 
         # Wait for updates to load in
-        sleep(600)
+        sleep(10)
+
+        # Wait for page to load
+        timeout = 500
+        try:
+            avTablePresent = EC.presence_of_element_located((By.ID, 'ext-gen468-gp-type-anti-virus-bd'))
+            WebDriverWait(self.driver, timeout).until(avTablePresent)
+        except TimeoutException:
+            print('Timed out waiting for updates to load.')
+
+        avTable = self.driver.find_element_by_id('ext-gen468-gp-type-anti-virus-bd')
+        avChildren = avTable.find_elements_by_css_selector('div')
+        latest = {'date': None, 'version': None, 'link': None}
+
+        print('Going for it.')
+
+        # Iterate all versions
+        for child in avChildren:
+            print(child.get_attribute('innerHTML'))
+            # Iterate details of each version
+            date = re.search(r'^[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} PDT$', child.get_attribute('innerHTML')) # e.g. 2019/06/14 04:02:07 PDT
+            print(date)
+            if latest['date'] == None or latest['date'] < date:
+                latest['date'] = date
+                latest['version'] = re.search(r'^[0-9]{4}-[0-9]{4}$', child.get_attribute('innerHTML')) # e.g. 3009-3519
+                latest['link'] = child.find_element_by_css_selector('a[content="Release Notes"]')
+                print('New latest:')
+                print(latest)
 
         # Here's the progress element
         # <span class="ext-mb-text" id="ext-gen538" style="display: inline;">Checking for new content updates...</span>
