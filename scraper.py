@@ -6,10 +6,10 @@ import requests
 from time import sleep
 
 from bs4 import BeautifulSoup
+from elasticsearch_dsl import Boolean, connections, Date, DocType, Keyword, Text
 from flask import Flask
-from guerrillamail import GuerrillaMailSession
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import ElementClickInterceptedException, NoAlertPresentException, TimeoutException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
@@ -19,208 +19,166 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 app = Flask(__name__)
-app.config.from_object('config.Config')
+app.config.from_object('config.DebugConfig')
+
+
+class VersionDocument(DocType):
+    '''
+    Update metadata document
+    '''
+    id = Text(analyzer='snowball', fields={'raw': Keyword()})
+    shortversion = Text()
+    version = Text()
+    date = Date()
+    analyzed = Boolean()
+
+    class Index:
+        name = 'update-details'
+
+    @classmethod
+    def get_indexable(cls):
+        return cls.get_model().get_objects()
+
+    @classmethod
+    def from_obj(cls, obj):
+        return cls(
+            id=obj.id,
+            shortversion=obj.shortversion,
+            version=obj.version,
+            date=obj.date,
+            analyzed=obj.analyzed,
+            )
+
+    def save(self, **kwargs):
+        return super(VersionDocument, self).save(**kwargs)
 
 
 class Scraper(object):
-    PACKAGE_KEY = {
-        "appthreat":  "CONTENTS",
-        "app":        "APPS",
-        "antivirus":  "VIRUS",
-        "wildfire":   "WILDFIRE_OLDER",
-        "wildfire2":  "WILDFIRE_NEWEST",
-        "wf500":      "WF-500 CONTENT",
-        "traps":      "TRAPS3.4",
-        "clientless": "GPCONTENTS",
-    }
-    LOGIN_URL = "https://identity.paloaltonetworks.com/idp/startSSO.ping?PartnerSpId=supportCSP&TargetResource=https://support.paloaltonetworks.com/Updates/DynamicUpdates/{companyid}"
-    UPDATE_URL = "https://support.paloaltonetworks.com/Updates/DynamicUpdates/{companyid}"
-    GET_LINK_URL = "https://support.paloaltonetworks.com/Updates/GetDownloadUrl"
 
-    def __init__(self, email, password, company_id, package="appthreat", \
-        debug=False, isReleaseNotes=False, binary_location='/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary'):
+    def __init__(self, ip, username, password, \
+        debug=False, isReleaseNotes=False, chrome_driver='chromedriver', binary_location='/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary'):
         # Set up session details
-        if package is None:
-            package = "appthreat"
-        elif package not in self.PACKAGE_KEY:
-            raise UnknownPackage("Unknown package type: %s" % package)
-        self.fake_email = app.config['FAKE_EMAIL']
-        self.email = email
+        self.ip = ip
+        self.username = username
         self.password = password
-        self.package = package
-        self.key = self.PACKAGE_KEY[package]
-        self.filename_string = 'ReleaseNotesFileName' if isReleaseNotes else 'FileName'
 
         # Set up driver
         chrome_options = Options()
-        # chrome_options.add_argument('--headless') # TODO for debugging purposes
+        if not debug:
+            chrome_options.add_argument('--headless')
         chrome_options.binary_location = binary_location
-        self.driver = webdriver.Chrome(executable_path=os.path.abspath('chromedriver'), options=chrome_options)
+        self.driver = webdriver.Chrome(executable_path=os.path.abspath(chrome_driver), options=chrome_options)
 
-        # Set up links
-        company_id = app.config['COMPANY_ID']
-        if company_id == '':
-            logging.error('No \'companyid\' set in config file. This will probably result in some error.')
-        url_options = {'companyid': company_id}
-        self.login_url = self.LOGIN_URL.format(**url_options)
-        self.update_url = self.UPDATE_URL.format(**url_options)
-        self.get_link_url = self.GET_LINK_URL.format(**url_options)
+        # Clear details
+        self.latest = {'date': None, 'version': None, 'link': None}
 
     def __del__(self):
         self.driver.close()
 
-    def getOTP(self):
-        session = GuerrillaMailSession(email_address=self.fake_email)
-        # Wait for email to arrive
-        while True:
-            print('Making request.')
-            try:
-                latest_summary = session.get_email_list()[0]
-                if(latest_summary.sender == self.email): # TODO there's a problem if we keep sending OTP emails from me. handle it
-                    break
-            except IndexError:
-                # Not enough mail, sleep anyway
-                pass
-            sleep(5)
-        print('You\'ve got mail!')
-        # Read the email with the OTP
-        email = session.get_email(latest_summary.guid)
-
-        # Parse out OTP code
-        mailsoup = BeautifulSoup(email.body, 'html5lib')
-        try:
-            header = mailsoup.find('h1')
-            otpElement = header.find_next_sibling('p').find_next_sibling('p')
-            otpCode = otpElement.string.strip() # Remove whitespace
-            print(f'Your OTP code is {otpCode}')
-            return otpCode
-        except Exception as e:
-            print(e)
-            print('Didn\'t get OTP code') # TODO handle errors better. 
-
     def login(self):
-        # Load and identify login form
-        self.driver.get(self.login_url)
-        sleep(10)
-        print(self.driver.page_source)
-        emailBox = self.driver.find_element_by_id('Email') # TODO maybe check this lol idk
-        pwdBox = self.driver.find_element_by_id('Password')
-        submit = self.driver.find_element_by_class_name('loginbtn')
+        # Load firewall login interface
+        self.driver.get(f'https://{self.ip}')
 
-        # Fill login form
-        emailBox.clear()
-        emailBox.send_keys(self.email)
+        # Fill login form and submit
+        userBox = self.driver.find_element_by_id('user') # TODO maybe check this lol idk
+        pwdBox = self.driver.find_element_by_id('passwd')
+        userBox.clear()
+        userBox.send_keys(self.username)
         pwdBox.clear()
         pwdBox.send_keys(self.password)
-        submit.click()
+        pwdBox.send_keys(Keys.RETURN)
+        
+        # If the default creds box pops up, handle it.
+        try:
+            alertBox = self.driver.switch_to.alert
+            alertBox.accept()
+        except NoAlertPresentException:
+            pass # Firewall is not warning us about default creds
 
-        # Get 2FA code from email
-        otp = self.getOTP()
+    def find_update_page(self):
+        # Wait for page to load
+        timeout = 500
+        try:
+            deviceTabPresent = EC.presence_of_element_located((By.ID, 'device'))
+            WebDriverWait(self.driver, timeout).until(deviceTabPresent)
+        except TimeoutException:
+            print('Timed out waiting for post-login page to load.')
 
-        # Submit the 2FA code
-        otpBox = self.driver.find_element_by_id('otp')
-        submitOtp = self.driver.find_element_by_css_selector('#otp-form > div > input')
-        otpBox.click()
-        otpBox.clear()
-        otpBox.send_keys(otp)
+        # Go to device tab
+        deviceTab = self.driver.find_element_by_id('device')
+        deviceTab.click()
 
-        # Hover first so it lets you submit
-        hover = ActionChains(self.driver).move_to_element(submitOtp)
-        hover.perform()
-        otpBox.submit()
+        # Go to Dynamic Updates
+        dynamicUpdates = self.driver.find_element_by_css_selector('div[ext\\3Atree-node-id="device/dynamic-updates"]')
+        dynamicUpdates.click()
+
+        # Get latest updates
+        checkNow = self.driver.find_element_by_css_selector('table[itemid="Device/Dynamic Updates-Check Now"]')
+        self.driver.execute_script("arguments[0].scrollIntoView(true);", checkNow);
+
+        # Click as soon as in view
+        while True:
+            try:
+                checkNow.click()
+                break
+            except ElementClickInterceptedException:
+                sleep(1)
+
+        # Wait for updates to load in
+        sleep(10)
 
         # Wait for page to load
         timeout = 500
         try:
-            dynamicHeader = EC.presence_of_element_located((By.ID, 'dynamicUpdates'))
-            WebDriverWait(self.driver, timeout).until(dynamicHeader)
+            avTablePresent = EC.presence_of_element_located((By.ID, 'ext-gen468-gp-type-anti-virus-bd'))
+            WebDriverWait(self.driver, timeout).until(avTablePresent)
         except TimeoutException:
-            print('Timed out waiting for post-login page to load.')
+            print('Timed out waiting for updates to load.')
 
-        # Get Request Verification Token and updates
-        token = self.driver.find_element_by_name('__RequestVerificationToken')
-        match = re.search(r'"data":({"Data":.*?"Total":\d+,"AggregateResults":null})', self.driver.page_source)
-        if match is None:
-            raise GetLinkError("You have no access to download files. Probably some hardcoded URL is wrong, or you set wrong 'companyid' in config file.")
-        updates = json.loads(match.group(1))
-        return token, updates['Data']
+        avTable = self.driver.find_element_by_id('ext-gen468-gp-type-anti-virus-bd')
+        avChildren = avTable.find_elements_by_xpath('*')
+        self.latest = {'date': None, 'version': None, 'link': None}
+        # Iterate all versions
+        for child in avChildren:
+            source = child.get_attribute('innerHTML')
+            # Iterate details of each version
+            date = re.search(r'[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} PDT', source).group(0) # e.g. 2019/06/14 04:02:07 PDT
+            if self.latest['date'] == None or self.latest['date'] < date:
+                self.latest['date'] = date
+                self.latest['version'] = re.search(r'[0-9]{4}-[0-9]{4}', source).group(0) # e.g. 3009-3519
+                self.latest['link'] = re.search(r'https://downloads\.paloaltonetworks\.com/virus/AntiVirusExternal-[0-9]*\.html\?__gda__=[0-9]*_[a-z0-9]*', source).group(0)
 
-    def find_latest_update(self, updates):
-        updates_of_type = [u for u in updates if u['Key'] == self.key]
-        updates_sorted = sorted(updates_of_type, key=lambda x: datetime.strptime(x['ReleaseDate'], '%Y-%m-%dT%H:%M:%S'))
-        latest = updates_sorted[-1]
-        print(f'Found latest update:  {latest[self.filename_string]}  Released {latest["ReleaseDate"]}')
-        return latest[self.filename_string], latest['FolderName'], latest['VersionNumber']
-
-    def click_link(self):
+    def download_release(self, download_dir):
         '''
-        Maybe eventually we'll not hard-code this. 
-        '''
-        # Get section header
-        body = self.driver.find_element_by_xpath('//tbody')
-        
-
-    def get_download_link(self, token, filename, foldername):
-        '''
-        Broken. fml.
-        '''
-        headers = {'Content-Type': 'application/json; charset=UTF-8',
-                   'Accept': 'application/json, text/javascript, */*; q=0.01',
-                   'X-Requested-With': 'XMLHttpRequest',
-                   }
-        payload = {'__RequestVerificationToken': token,
-                   'FileName': filename,
-                   'FolderName': foldername,
-                   }
-        response = requests.post(self.get_link_url, data=payload, headers=headers).text
-        print('Response text:')
-        print(response)
-        responseJson = json.loads(response)
-        
-        if 'Success' not in responseJson or not responseJson['Success']:
-            raise GetLinkError(f'Failure getting download link: {responseJson}')
-        return responseJson['DownloadUrl']
-
-    def download(self, download_dir, url, filename):
-        '''
-        Didn't even get here yet tbh
+        Download the page source of the latest release notes
         '''
         os.chdir(download_dir)
-        self.browser.retrieve(url, filename)
-        return filename
+        self.driver.get(self.latest['link'])
+        filename = f'Updates_{self.latest["version"]}.html'
+        with open(filename, 'w') as f:
+            f.write(self.driver.page_source)
 
+    def write_details_to_db(self, elasticsearch_ip):
+        '''
+        Write version and date to elasticsearch
+        '''
+        connections.create_connection(host=elasticsearch_ip)
+        version_doc = VersionDocument()
+        version_doc.shortversion = self.latest['version'].split('-')[0]
+        version_doc.version = self.latest['version']
+        version_doc.date = self.latest['date']
+        version_doc.analyzed = False
+        version_doc.save()
 
 
 if __name__ == '__main__':
     download_dir = app.config['DOWNLOAD_DIR']
+    elasticsearch_ip = app.config['ELASTIC_IP']
 
-    scraper = Scraper(email=app.config['EMAIL'], password=app.config['PASSWORD'], company_id=app.config['COMPANY_ID'],\
-        package="appthreat", debug=False, isReleaseNotes=False, binary_location=app.config['BINARY_LOCATION'])
+    scraper = Scraper(ip=app.config['FIREWALL_IP'], username=app.config['USERNAME'], password=app.config['PASSWORD'], \
+        debug=app.config['DEBUG'], chrome_driver=app.config['DRIVER'], binary_location=app.config['BINARY_LOCATION'])
 
-    token, updates = scraper.login()
-    
-    # Determine latest update
-    filename, foldername, latestversion = scraper.find_latest_update(updates)
-
-    # Get previously downloaded versions from download directory
-    downloaded_versions = []
-    for f in os.listdir(download_dir):
-        downloaded_versions.append(f)
-
-    # Check if already downloaded latest and do nothing
-    if filename in downloaded_versions:
-        print(f'Already downloaded latest version: {filename}')
-        sys.exit(0)
-
-    # content = scraper.click_link()
-
-    # # Get download URL
-    # fileurl = scraper.get_download_link(token, filename, foldername)
-
-    # # Download latest version to download directory
-    # print(f'Downloading latest version: {latestversion}')
-    # filename = scraper.download(download_dir, fileurl, filename)
-    # if filename is not None:
-    #     print(f'Finished downloading file: {filename}')
-    # else:
-    #     print('Unable to download latest content update')
+    scraper.login()
+    scraper.find_update_page()
+    scraper.write_details_to_db(elasticsearch_ip)
+    scraper.download_release(download_dir)
