@@ -6,7 +6,7 @@ import requests
 from time import sleep
 
 from bs4 import BeautifulSoup
-from elasticsearch_dsl import Bool, connections, Date, DocType, Keyword, Text
+from elasticsearch_dsl import Boolean, connections, Date, DocType, Keyword, Text
 from flask import Flask
 from selenium import webdriver
 from selenium.common.exceptions import ElementClickInterceptedException, NoAlertPresentException, TimeoutException
@@ -30,7 +30,7 @@ class VersionDocument(DocType):
     shortversion = Text()
     version = Text()
     date = Date()
-    analyzed = Bool()
+    analyzed = Boolean()
 
     class Index:
         name = 'update-details'
