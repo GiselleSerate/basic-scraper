@@ -10,9 +10,11 @@ For a Mac install. Replace the firewall credentials and IP with the applicable o
 class Config(object):
     USERNAME = 'admin'
     PASSWORD = 'admin'
-    FIREWALL_IP = '0.0.0.0'
     BINARY_LOCATION = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
     DRIVER = 'vanilladriver'
+    DOWNLOAD_DIR = '../versiondocs/'
+    FIREWALL_IP = '0.0.0.0'
+    ELASTIC_IP = 'localhost'
     DEBUG = False
 
 class DebugConfig(Config):
