@@ -109,3 +109,5 @@ config.py
 chromedriver
 canarydriver
 vanilladriver
+.DS_Store
+contentpacks
