@@ -6,6 +6,7 @@ import requests
 from time import sleep
 
 from bs4 import BeautifulSoup
+from elasticsearch_dsl import Bool, connections, Date, DocType, Keyword, Text
 from flask import Flask
 from selenium import webdriver
 from selenium.common.exceptions import ElementClickInterceptedException, NoAlertPresentException, TimeoutException
@@ -19,6 +20,37 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 app = Flask(__name__)
 app.config.from_object('config.DebugConfig')
+
+
+class VersionDocument(DocType):
+    '''
+    Update metadata document
+    '''
+    id = Text(analyzer='snowball', fields={'raw': Keyword()})
+    shortversion = Text()
+    version = Text()
+    date = Date()
+    analyzed = Bool()
+
+    class Index:
+        name = 'update-details'
+
+    @classmethod
+    def get_indexable(cls):
+        return cls.get_model().get_objects()
+
+    @classmethod
+    def from_obj(cls, obj):
+        return cls(
+            id=obj.id,
+            shortversion=obj.shortversion,
+            version=obj.version,
+            date=obj.date,
+            analyzed=obj.analyzed,
+            )
+
+    def save(self, **kwargs):
+        return super(VersionDocument, self).save(**kwargs)
 
 
 class Scraper(object):
@@ -36,6 +68,9 @@ class Scraper(object):
             chrome_options.add_argument('--headless')
         chrome_options.binary_location = binary_location
         self.driver = webdriver.Chrome(executable_path=os.path.abspath(chrome_driver), options=chrome_options)
+
+        # Clear details
+        self.latest = {'date': None, 'version': None, 'link': None}
 
     def __del__(self):
         self.driver.close()
@@ -101,114 +136,49 @@ class Scraper(object):
             print('Timed out waiting for updates to load.')
 
         avTable = self.driver.find_element_by_id('ext-gen468-gp-type-anti-virus-bd')
-        avChildren = avTable.find_elements_by_css_selector('div')
-        latest = {'date': None, 'version': None, 'link': None}
-
-        print('Going for it.')
-
+        avChildren = avTable.find_elements_by_xpath('*')
+        self.latest = {'date': None, 'version': None, 'link': None}
         # Iterate all versions
         for child in avChildren:
-            print(child.get_attribute('innerHTML'))
+            source = child.get_attribute('innerHTML')
             # Iterate details of each version
-            date = re.search(r'^[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} PDT$', child.get_attribute('innerHTML')) # e.g. 2019/06/14 04:02:07 PDT
-            print(date)
-            if latest['date'] == None or latest['date'] < date:
-                latest['date'] = date
-                latest['version'] = re.search(r'^[0-9]{4}-[0-9]{4}$', child.get_attribute('innerHTML')) # e.g. 3009-3519
-                latest['link'] = child.find_element_by_css_selector('a[content="Release Notes"]')
-                print('New latest:')
-                print(latest)
+            date = re.search(r'[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} PDT', source).group(0) # e.g. 2019/06/14 04:02:07 PDT
+            if self.latest['date'] == None or self.latest['date'] < date:
+                self.latest['date'] = date
+                self.latest['version'] = re.search(r'[0-9]{4}-[0-9]{4}', source).group(0) # e.g. 3009-3519
+                self.latest['link'] = re.search(r'https://downloads\.paloaltonetworks\.com/virus/AntiVirusExternal-[0-9]*\.html\?__gda__=[0-9]*_[a-z0-9]*', source).group(0)
 
-        # Here's the progress element
-        # <span class="ext-mb-text" id="ext-gen538" style="display: inline;">Checking for new content updates...</span>
+    def download_release(self, download_dir):
+        '''
+        Download the page source of the latest release notes
+        '''
+        os.chdir(download_dir)
+        self.driver.get(self.latest['link'])
+        filename = f'Updates_{self.latest["version"]}.html'
+        with open(filename, 'w') as f:
+            f.write(self.driver.page_source)
 
-        # # Get 2FA code from email
-        # otp = self.getOTP()
-
-        # # Submit the 2FA code
-        # otpBox = self.driver.find_element_by_id('otp')
-        # submitOtp = self.driver.find_element_by_css_selector('#otp-form > div > input')
-        # otpBox.click()
-        # otpBox.clear()
-        # otpBox.send_keys(otp)
-
-        # # Hover first so it lets you submit
-        # hover = ActionChains(self.driver).move_to_element(submitOtp)
-        # hover.perform()
-        # otpBox.submit()
-
-        # # Wait for page to load
-        # timeout = 500
-        # try:
-        #     dynamicHeader = EC.presence_of_element_located((By.ID, 'dynamicUpdates'))
-        #     WebDriverWait(self.driver, timeout).until(dynamicHeader)
-        # except TimeoutException:
-        #     print('Timed out waiting for post-login page to load.')
-
-        # # Get Request Verification Token and updates
-        # token = self.driver.find_element_by_name('__RequestVerificationToken')
-        # match = re.search(r'"data":({"Data":.*?"Total":\d+,"AggregateResults":null})', self.driver.page_source)
-        # if match is None:
-        #     raise GetLinkError("You have no access to download files. Probably some hardcoded URL is wrong, or you set wrong 'companyid' in config file.")
-        # updates = json.loads(match.group(1))
-        # return token, updates['Data']
-
-    # def find_latest_update(self, updates):
-    #     updates_of_type = [u for u in updates if u['Key'] == self.key]
-    #     updates_sorted = sorted(updates_of_type, key=lambda x: datetime.strptime(x['ReleaseDate'], '%Y-%m-%dT%H:%M:%S'))
-    #     latest = updates_sorted[-1]
-    #     print(f'Found latest update:  {latest[self.filename_string]}  Released {latest["ReleaseDate"]}')
-    #     return latest[self.filename_string], latest['FolderName'], latest['VersionNumber']
-
-    # def click_link(self):
-    #     '''
-    #     Maybe eventually we'll not hard-code this. 
-    #     '''
-    #     # Get section header
-    #     body = self.driver.find_element_by_xpath('//tbody')
-        
-
-    # def download(self, download_dir, url, filename):
-    #     '''
-    #     Didn't even get here yet tbh
-    #     '''
-    #     os.chdir(download_dir)
-    #     self.browser.retrieve(url, filename)
-    #     return filename
-
+    def write_details_to_db(self, elasticsearch_ip):
+        '''
+        Write version and date to elasticsearch
+        '''
+        connections.create_connection(host=elasticsearch_ip)
+        version_doc = VersionDocument()
+        version_doc.shortversion = self.latest['version'].split('-')[0]
+        version_doc.version = self.latest['version']
+        version_doc.date = self.latest['date']
+        version_doc.analyzed = False
+        version_doc.save()
 
 
 if __name__ == '__main__':
     download_dir = app.config['DOWNLOAD_DIR']
+    elasticsearch_ip = app.config['ELASTIC_IP']
 
     scraper = Scraper(ip=app.config['FIREWALL_IP'], username=app.config['USERNAME'], password=app.config['PASSWORD'], \
         debug=app.config['DEBUG'], chrome_driver=app.config['DRIVER'], binary_location=app.config['BINARY_LOCATION'])
 
     scraper.login()
     scraper.find_update_page()
-    
-    # # Determine latest update
-    # filename, foldername, latestversion = scraper.find_latest_update(updates)
-
-    # # Get previously downloaded versions from download directory
-    # downloaded_versions = []
-    # for f in os.listdir(download_dir):
-    #     downloaded_versions.append(f)
-
-    # # Check if already downloaded latest and do nothing
-    # if filename in downloaded_versions:
-    #     print(f'Already downloaded latest version: {filename}')
-    #     sys.exit(0)
-
-    # content = scraper.click_link()
-
-    # # Get download URL
-    # fileurl = scraper.get_download_link(token, filename, foldername)
-
-    # # Download latest version to download directory
-    # print(f'Downloading latest version: {latestversion}')
-    # filename = scraper.download(download_dir, fileurl, filename)
-    # if filename is not None:
-    #     print(f'Finished downloading file: {filename}')
-    # else:
-    #     print('Unable to download latest content update')
+    scraper.write_details_to_db(elasticsearch_ip)
+    scraper.download_release(download_dir)
