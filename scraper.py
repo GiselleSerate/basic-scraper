@@ -2,7 +2,6 @@ from datetime import datetime
 import json
 import os
 import re
-import requests
 from time import sleep
 
 from bs4 import BeautifulSoup
@@ -163,7 +162,7 @@ class Scraper(object):
         avChildren = avTable.find_elements_by_xpath('*')
         self.latest = {'date': None, 'version': None, 'link': None}
         # Iterate all versions
-        for child in avChildren:
+        for child in avChildren: # TODO not hard to make it do all
             source = child.get_attribute('innerHTML')
             # Iterate details of each version
             date = re.search(r'[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} PDT', source).group(0) # e.g. 2019/06/14 04:02:07 PDT
@@ -201,7 +200,7 @@ class Scraper(object):
         self.download_release()
 
 if __name__ == '__main__':
-    scraper = Scraper(ip=app.config['FIREWALL_IP'], username=app.config['USERNAME'], password=app.config['PASSWORD'], \
+    scraper = Scraper(ip=app.config['FW_IP'], username=app.config['FW_USERNAME'], password=app.config['FW_PASSWORD'], \
         debug=app.config['DEBUG'], chrome_driver=app.config['DRIVER'], binary_location=app.config['BINARY_LOCATION'], \
         download_dir=app.config['DOWNLOAD_DIR'], elastic_ip=app.config['ELASTIC_IP'])
     scraper.full_download()
