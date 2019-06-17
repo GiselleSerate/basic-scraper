@@ -56,7 +56,8 @@ class VersionDocument(DocType):
 class Scraper(object):
 
     def __init__(self, ip, username, password, \
-        debug=False, isReleaseNotes=False, chrome_driver='chromedriver', binary_location='/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary'):
+        debug=False, isReleaseNotes=False, chrome_driver='chromedriver', binary_location='/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary', \
+        download_dir='contentpacks', elastic_ip='localhost'):
         # Set up session details
         self.ip = ip
         self.username = username
@@ -66,10 +67,14 @@ class Scraper(object):
         chrome_options = Options()
         if not debug:
             chrome_options.add_argument('--headless')
+            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--ignore-certificate-errors')
         chrome_options.binary_location = binary_location
         self.driver = webdriver.Chrome(executable_path=os.path.abspath(chrome_driver), options=chrome_options)
 
-        # Clear details
+        # Init details
+        self.download_dir = download_dir
+        self.elastic_ip = elastic_ip
         self.latest = {'date': None, 'version': None, 'link': None}
 
     def __del__(self):
@@ -87,16 +92,28 @@ class Scraper(object):
         pwdBox.clear()
         pwdBox.send_keys(self.password)
         pwdBox.send_keys(Keys.RETURN)
+
+        timeout = 10
         
         # If the default creds box pops up, handle it.
-        try:
-            alertBox = self.driver.switch_to.alert
-            alertBox.accept()
-        except NoAlertPresentException:
-            pass # Firewall is not warning us about default creds
+        while(True):
+            timeout -= 1
+            try:
+                alertBox = self.driver.switch_to.alert
+                alertBox.accept()
+                return
+            except NoAlertPresentException:
+                if timeout < 1:
+                    return
+                print('NAPPY')
+                sleep(1) # Firewall is not warning us about default creds . . . yet?
+
+        
 
     def find_update_page(self):
+        self.driver.get(f'https://{self.ip}')
         # Wait for page to load
+
         timeout = 500
         try:
             deviceTabPresent = EC.presence_of_element_located((By.ID, 'device'))
@@ -148,37 +165,36 @@ class Scraper(object):
                 self.latest['version'] = re.search(r'[0-9]{4}-[0-9]{4}', source).group(0) # e.g. 3009-3519
                 self.latest['link'] = re.search(r'https://downloads\.paloaltonetworks\.com/virus/AntiVirusExternal-[0-9]*\.html\?__gda__=[0-9]*_[a-z0-9]*', source).group(0)
 
-    def download_release(self, download_dir):
+    def download_release(self):
         '''
         Download the page source of the latest release notes
         '''
-        os.chdir(download_dir)
+        os.chdir(self.download_dir)
         self.driver.get(self.latest['link'])
         filename = f'Updates_{self.latest["version"]}.html'
         with open(filename, 'w') as f:
             f.write(self.driver.page_source)
 
-    def write_details_to_db(self, elasticsearch_ip):
+    def write_details_to_db(self):
         '''
         Write version and date to elasticsearch
         '''
-        connections.create_connection(host=elasticsearch_ip)
-        version_doc = VersionDocument()
+        connections.create_connection(host=self.elastic_ip)
+        version_doc = VersionDocument(meta={'id':self.latest['version']})
         version_doc.shortversion = self.latest['version'].split('-')[0]
         version_doc.version = self.latest['version']
         version_doc.date = self.latest['date']
         version_doc.analyzed = False
         version_doc.save()
 
+    def full_download(self):
+        self.login()
+        self.find_update_page()
+        self.write_details_to_db()
+        self.download_release()
 
 if __name__ == '__main__':
-    download_dir = app.config['DOWNLOAD_DIR']
-    elasticsearch_ip = app.config['ELASTIC_IP']
-
     scraper = Scraper(ip=app.config['FIREWALL_IP'], username=app.config['USERNAME'], password=app.config['PASSWORD'], \
-        debug=app.config['DEBUG'], chrome_driver=app.config['DRIVER'], binary_location=app.config['BINARY_LOCATION'])
-
-    scraper.login()
-    scraper.find_update_page()
-    scraper.write_details_to_db(elasticsearch_ip)
-    scraper.download_release(download_dir)
+        debug=app.config['DEBUG'], chrome_driver=app.config['DRIVER'], binary_location=app.config['BINARY_LOCATION'], \
+        download_dir=app.config['DOWNLOAD_DIR'], elastic_ip=app.config['ELASTIC_IP'])
+    scraper.full_download()
