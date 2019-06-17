@@ -99,16 +99,23 @@ class Scraper(object):
         while(True):
             timeout -= 1
             try:
-                alertBox = self.driver.switch_to.alert
-                alertBox.accept()
+                # Handle alert if we expect it to be there
+                if(self.username == 'admin' and self.password == 'admin'):
+                    alertBox = self.driver.switch_to.alert
+                    alertBox.accept()
                 return
             except NoAlertPresentException:
+                # We expect an alert, but haven't seen one yet
                 if timeout < 1:
+                    return # Waited long enough
+                try:
+                    sleep(1) # Firewall is not warning us about default creds . . . yet?
+                except UnexpectedAlertPresentException:
+                    # Alert happened while we were sleeping, handle it
+                    alertBox = self.driver.switch_to.alert
+                    alertBox.accept()
                     return
-                print('NAPPY')
-                sleep(1) # Firewall is not warning us about default creds . . . yet?
 
-        
 
     def find_update_page(self):
         self.driver.get(f'https://{self.ip}')
