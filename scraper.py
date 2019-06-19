@@ -1,11 +1,12 @@
 from datetime import datetime
+from enum import IntEnum, unique
 import json
 import os
 import re
 from time import sleep
 
 from bs4 import BeautifulSoup
-from elasticsearch_dsl import Boolean, connections, Date, DocType, Keyword, Text
+from elasticsearch_dsl import connections, Date, DocType, Integer, Keyword, Search, Text
 from flask import Flask
 from selenium import webdriver
 from selenium.common.exceptions import ElementClickInterceptedException, NoAlertPresentException, TimeoutException
@@ -20,6 +21,15 @@ from selenium.webdriver.support.ui import WebDriverWait
 app = Flask(__name__)
 app.config.from_object('config.DebugConfig')
 
+@unique
+class DocStatus(IntEnum):
+    '''
+    Defines document statuses
+    '''
+    DOWNLOADED = 1
+    WRITTEN = 2
+    AUTOFOCUSED = 3
+
 
 class VersionDocument(DocType):
     '''
@@ -29,7 +39,7 @@ class VersionDocument(DocType):
     shortversion = Text()
     version = Text()
     date = Date()
-    analyzed = Boolean()
+    status = Integer()
 
     class Index:
         name = 'update-details'
@@ -45,7 +55,7 @@ class VersionDocument(DocType):
             shortversion=obj.shortversion,
             version=obj.version,
             date=obj.date,
-            analyzed=obj.analyzed,
+            status=obj.status,
             )
 
     def save(self, **kwargs):
@@ -73,8 +83,8 @@ class Scraper(object):
 
         # Init details
         self.download_dir = download_dir
-        self.elastic_ip = elastic_ip
-        self.latest = {'date': None, 'version': None, 'link': None}
+        self.versions = []
+        connections.create_connection(host=elastic_ip)
 
     def __del__(self):
         self.driver.close()
@@ -116,7 +126,7 @@ class Scraper(object):
                     return
 
 
-    def find_update_page(self):
+    def find_update_page(self): # TODO sometimes we get stuck somewhere in this function. fix it
         self.driver.get(f'https://{self.ip}')
         # Wait for page to load
 
@@ -160,44 +170,73 @@ class Scraper(object):
 
         avTable = self.driver.find_element_by_id('ext-gen468-gp-type-anti-virus-bd')
         avChildren = avTable.find_elements_by_xpath('*')
-        self.latest = {'date': None, 'version': None, 'link': None}
+        self.versions = []
         # Iterate all versions
-        for child in avChildren: # TODO not hard to make it do all
+        for child in avChildren:
             source = child.get_attribute('innerHTML')
             # Iterate details of each version
             date = re.search(r'[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} PDT', source).group(0) # e.g. 2019/06/14 04:02:07 PDT
-            if self.latest['date'] == None or self.latest['date'] < date:
-                self.latest['date'] = date
-                self.latest['version'] = re.search(r'[0-9]{4}-[0-9]{4}', source).group(0) # e.g. 3009-3519
-                self.latest['link'] = re.search(r'https://downloads\.paloaltonetworks\.com/virus/AntiVirusExternal-[0-9]*\.html\?__gda__=[0-9]*_[a-z0-9]*', source).group(0)
+            newVer = {}
+            newVer['date'] = date
+            newVer['version'] = re.search(r'[0-9]{4}-[0-9]{4}', source).group(0) # e.g. 3009-3519
+            newVer['link'] = re.search(r'https://downloads\.paloaltonetworks\.com/virus/AntiVirusExternal-[0-9]*\.html\?__gda__=[0-9]*_[a-z0-9]*', source).group(0)
+            self.versions.append(newVer)
 
-    def download_release(self):
+    def download_latest_release(self):
         '''
-        Download the page source of the latest release notes
+        Download the page source of only the latest release notes
+        '''
+        # Get the absolute latest release notes
+        latest = max(self.versions, key=lambda x: x['date'])
+        self.download_release(latest)
+
+    def download_all_available_releases(self):
+        '''
+        Download the page source for all releases still on the firewall
+        '''
+        for release in self.versions:
+            self.download_release(release)
+
+    def download_all_new_releases(self):
+        '''
+        Download the specified release from the firewall if it isn't already registered in the database
+        '''
+        for release in self.versions:
+            versionSearch = Search(index='update-details').query('match', version=release['version'])
+            versionSearch.execute()
+            downloaded = False
+            for hit in versionSearch:
+                downloaded = True
+            if not downloaded: 
+                self.download_release(release)
+
+    def download_release(self, release):
+        '''
+        Download the specified release from the firewall and notate this in the database
         '''
         os.chdir(self.download_dir)
-        self.driver.get(self.latest['link'])
-        filename = f'Updates_{self.latest["version"]}.html'
+        self.driver.get(release['link'])
+        filename = f'Updates_{release["version"]}.html'
         with open(filename, 'w') as f:
             f.write(self.driver.page_source)
 
-    def write_details_to_db(self):
-        '''
-        Write version and date to elasticsearch
-        '''
-        connections.create_connection(host=self.elastic_ip)
-        version_doc = VersionDocument(meta={'id':self.latest['version']})
-        version_doc.shortversion = self.latest['version'].split('-')[0]
-        version_doc.version = self.latest['version']
-        version_doc.date = self.latest['date']
-        version_doc.analyzed = False
+        # Write version and date to elasticsearch
+        version_doc = VersionDocument(meta={'id':release['version']})
+        version_doc.shortversion = release['version'].split('-')[0]
+        version_doc.version = release['version']
+        version_doc.date = release['date']
+        version_doc.status = DocStatus.DOWNLOADED.value
         version_doc.save()
+
+    def latest_download(self):
+        self.login()
+        self.find_update_page()
+        self.download_latest_release()
 
     def full_download(self):
         self.login()
         self.find_update_page()
-        self.write_details_to_db()
-        self.download_release()
+        self.download_all_new_releases()
 
 if __name__ == '__main__':
     scraper = Scraper(ip=app.config['FW_IP'], username=app.config['FW_USERNAME'], password=app.config['FW_PASSWORD'], \
