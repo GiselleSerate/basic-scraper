@@ -1,24 +1,36 @@
 # firewall_scraper
 
-Scrapes the latest release notes off a Palo Alto Networks firewall. This scraper has been refactored and integrated into [Pandorica](https://github.com/GiselleSerate/pandorica).
+Scrapes the latest release notes off a Palo Alto Networks firewall.
 
-This scraper is designed to work in vanilla Chrome. It might also work in other browsers, but no promises (Chrome Canary complains of circular JavaScript or something). 
+Written in Python 3.7. For this to work, you'll need a firewall to scrape. 
 
-Download the appropriate Chrome driver and put it in the root of this repository. 
+## Setup
+Download [Google Chrome](https://www.google.com/chrome/) and a corresponding [Chrome driver](https://sites.google.com/a/chromium.org/chromedriver/downloads).
 
-## Example `config.py` file
-For a Mac install. Replace the firewall credentials and IP with the applicable ones on your firewall. 
+Create the file `~/.panrc` that looks like this:
 ```
-class Config(object):
-    USERNAME = 'admin'
-    PASSWORD = 'admin'
-    BINARY_LOCATION = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-    DRIVER = 'vanilladriver'
-    DOWNLOAD_DIR = '../versiondocs/'
-    FIREWALL_IP = '0.0.0.0'
-    ELASTIC_IP = 'localhost'
-    DEBUG = False
-
-class DebugConfig(Config):
-    DEBUG = True
+FW_IP=10.48.60.12
+BINARY_LOCATION=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+DRIVER=${HOME}/_dev/pandorica/vanilladriver
+DOWNLOAD_DIR=${HOME}/_dev/versiondocs
+LOGGING_LEVEL=INFO
 ```
+* `FW_IP`: IP of your firewall
+* `BINARY_LOCATION`: path to your Chrome executable
+* `DRIVER`: path to your Chrome driver
+* `DOWNLOAD_DIR`: path to the directory where you'd like to download files
+* `LOGGING_LEVEL`: defines what log messages to print to console; one of `CRITICAL`, `ERROR`, `WARNING`, `INFO`, `DEBUG`
+
+Install the `requirements.txt` file, preferably in a virtual environment. From this repository: 
+```
+python -m venv .env
+source .env/bin/activate
+pip install -r requirements.txt
+```
+
+## Use
+Source your virtual environment: `source .env/bin/activate`
+
+Run the script: `python support_scraper.py`
+
+Files will be downloaded to the directory specified in your `.panrc`.
