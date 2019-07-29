@@ -1,4 +1,6 @@
-# basic-scraper
+# release_scraper
+
+Scrapes the latest release notes off a Palo Alto Networks firewall. This scraper has been refactored and integrated into [Pandorica](https://github.com/GiselleSerate/pandorica).
 
 This scraper is designed to work in vanilla Chrome. It might also work in other browsers, but no promises (Chrome Canary complains of circular JavaScript or something). 
 
