@@ -244,6 +244,9 @@ class FirewallScraper:
     def _download_release(self, release):
         '''
         Download the specified release from the firewall and notate this in the database.
+
+        Non-keyword arguments:
+        release -- a dictionary containing details about the release to download
         '''
         logging.info(f"Downloading {release['version']} from firewall.")
         os.chdir(self._download_dir)
@@ -277,6 +280,8 @@ class ElasticFirewallScraper(FirewallScraper):
     ip -- the IP of the firewall to scrape
     username -- the firewall username
     password -- the firewall password
+
+    Keyword arguments: 
     chrome_driver -- the name of the Chrome driver to use
     binary_location -- the path to the Chrome binary
     download_dir -- where to download the notes to
@@ -295,8 +300,7 @@ class ElasticFirewallScraper(FirewallScraper):
 
     def full_download(self):
         '''
-        Download the specified release from the firewall if it isn't
-        already registered in the database.
+        Download all undownloaded releases from the firewall.
         '''
         logging.info("Downloading all undownloaded releases from the firewall.")
         self.num_new_releases = 0
@@ -326,6 +330,9 @@ class ElasticFirewallScraper(FirewallScraper):
     def _download_release(self, release):
         '''
         Download the specified release from the firewall and notate this in the database.
+
+        Non-keyword arguments:
+        release -- a dictionary containing details about the release to download
         '''
         super(ElasticFirewallScraper, self)._download_release(release)
 
