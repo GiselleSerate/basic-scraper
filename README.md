@@ -1,4 +1,4 @@
-# release_scraper
+# firewall_scraper
 
 Scrapes the latest release notes off a Palo Alto Networks firewall. This scraper has been refactored and integrated into [Pandorica](https://github.com/GiselleSerate/pandorica).
 
